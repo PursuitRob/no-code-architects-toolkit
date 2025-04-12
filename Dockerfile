@@ -1,7 +1,7 @@
 # Base image
 FROM python:3.9-slim
 
-# Install system dependencies, build tools, and libraries
+# Install system dependencies, build tools, and libraries — all in one go
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     wget \
@@ -41,70 +41,48 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libtool \
     libfribidi-dev \
     libharfbuzz-dev \
+    chromium \
+    chromium-driver \
     && rm -rf /var/lib/apt/lists/*
 
-# Install SRT from source (latest version using cmake)
+# Install SRT from source
 RUN git clone https://github.com/Haivision/srt.git && \
     cd srt && \
     mkdir build && cd build && \
-    cmake .. && \
-    make -j$(nproc) && \
-    make install && \
-    cd ../.. && rm -rf srt
+    cmake .. && make -j$(nproc) && make install && cd ../.. && rm -rf srt
 
 # Install SVT-AV1 from source
 RUN git clone https://gitlab.com/AOMediaCodec/SVT-AV1.git && \
-    cd SVT-AV1 && \
-    git checkout v0.9.0 && \
-    cd Build && \
-    cmake .. && \
-    make -j$(nproc) && \
-    make install && \
-    cd ../.. && rm -rf SVT-AV1
+    cd SVT-AV1 && git checkout v0.9.0 && \
+    cd Build && cmake .. && make -j$(nproc) && make install && cd ../.. && rm -rf SVT-AV1
 
 # Install libvmaf from source
 RUN git clone https://github.com/Netflix/vmaf.git && \
-    cd vmaf/libvmaf && \
-    meson build --buildtype release && \
-    ninja -C build && \
-    ninja -C build install && \
-    cd ../.. && rm -rf vmaf && \
-    ldconfig  # Update the dynamic linker cache
+    cd vmaf/libvmaf && meson build --buildtype release && \
+    ninja -C build && ninja -C build install && cd ../.. && rm -rf vmaf && \
+    ldconfig
 
-# Manually build and install fdk-aac (since it is not available via apt-get)
+# Install fdk-aac from source
 RUN git clone https://github.com/mstorsjo/fdk-aac && \
-    cd fdk-aac && \
-    autoreconf -fiv && \
-    ./configure && \
-    make -j$(nproc) && \
-    make install && \
-    cd .. && rm -rf fdk-aac
+    cd fdk-aac && autoreconf -fiv && ./configure && \
+    make -j$(nproc) && make install && cd .. && rm -rf fdk-aac
 
-# Install libunibreak (required for ASS_FEATURE_WRAP_UNICODE)
+# Install libunibreak from source
 RUN git clone https://github.com/adah1972/libunibreak.git && \
-    cd libunibreak && \
-    ./autogen.sh && \
-    ./configure && \
-    make -j$(nproc) && \
-    make install && \
-    ldconfig && \
-    cd .. && rm -rf libunibreak
+    cd libunibreak && ./autogen.sh && ./configure && \
+    make -j$(nproc) && make install && ldconfig && cd .. && rm -rf libunibreak
 
-# Build and install libass with libunibreak support and ASS_FEATURE_WRAP_UNICODE enabled
+# Install libass with ASS_FEATURE_WRAP_UNICODE
 RUN git clone https://github.com/libass/libass.git && \
-    cd libass && \
-    autoreconf -i && \
+    cd libass && autoreconf -i && \
     ./configure --enable-libunibreak || { cat config.log; exit 1; } && \
-    mkdir -p /app && echo "Config log located at: /app/config.log" && cp config.log /app/config.log && \
+    mkdir -p /app && cp config.log /app/config.log && \
     make -j$(nproc) || { echo "Libass build failed"; exit 1; } && \
-    make install && \
-    ldconfig && \
-    cd .. && rm -rf libass
+    make install && ldconfig && cd .. && rm -rf libass
 
-# Build and install FFmpeg with all required features
+# Build FFmpeg with full feature set
 RUN git clone https://git.ffmpeg.org/ffmpeg.git ffmpeg && \
-    cd ffmpeg && \
-    git checkout n7.0.2 && \
+    cd ffmpeg && git checkout n7.0.2 && \
     PKG_CONFIG_PATH="/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/local/lib/pkgconfig" \
     CFLAGS="-I/usr/include/freetype2" \
     LDFLAGS="-L/usr/lib/x86_64-linux-gnu" \
@@ -136,64 +114,46 @@ RUN git clone https://git.ffmpeg.org/ffmpeg.git ffmpeg && \
         --extra-cflags="-I/usr/include/freetype2 -I/usr/include/libpng16 -I/usr/include" \
         --extra-ldflags="-L/usr/lib/x86_64-linux-gnu -lfreetype -lfontconfig" \
         --enable-gnutls \
-    && make -j$(nproc) && \
-    make install && \
-    cd .. && rm -rf ffmpeg
+    && make -j$(nproc) && make install && cd .. && rm -rf ffmpeg
 
-# Add /usr/local/bin to PATH (if not already included)
+# Optional: Include custom fonts (comment out if not needed)
+# COPY ./fonts /usr/share/fonts/custom
+# RUN fc-cache -f -v
+
 ENV PATH="/usr/local/bin:${PATH}"
+ENV CHROME_BIN="/usr/bin/chromium"
+ENV CHROMEDRIVER_BIN="/usr/bin/chromedriver"
 
-# Copy fonts into the custom fonts directory
-COPY ./fonts /usr/share/fonts/custom
-
-# Rebuild the font cache so that fontconfig can see the custom fonts
-RUN fc-cache -f -v
-
-# Set work directory
+# Set working directory
 WORKDIR /app
 
-# Set environment variable for Whisper cache
+# Whisper cache
 ENV WHISPER_CACHE_DIR="/app/whisper_cache"
+RUN mkdir -p ${WHISPER_CACHE_DIR}
 
-# Create cache directory (no need for chown here yet)
-RUN mkdir -p ${WHISPER_CACHE_DIR} 
-
-# Copy the requirements file first to optimize caching
+# Copy requirements and install Python dependencies
 COPY requirements.txt .
-
-# Install Python dependencies, upgrade pip 
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt && \
     pip install openai-whisper && \
-    pip install jsonschema 
-    
-# Install Chromium and Chromedriver
-RUN apt-get update && apt-get install -y \
-    chromium \
-    chromium-driver \
-    python3-selenium \
-    && rm -rf /var/lib/apt/lists/*
-    
-# Create the appuser 
-RUN useradd -m appuser 
+    pip install jsonschema
 
-# Give appuser ownership of the /app directory (including whisper_cache)
-RUN chown appuser:appuser /app 
+# Create appuser before downloading models
+RUN useradd -m appuser
+RUN chown appuser:appuser /app
 
-# Important: Switch to the appuser before downloading the model
 USER appuser
 
+# Pre-download whisper model
 RUN python -c "import os; print(os.environ.get('WHISPER_CACHE_DIR')); import whisper; whisper.load_model('base')"
 
-# Copy the rest of the application code
+# Copy remaining app code
 COPY . .
 
-# Expose the port the app runs on
 EXPOSE 8080
-
-# Set environment variables
 ENV PYTHONUNBUFFERED=1
 
+# Gunicorn start script
 RUN echo '#!/bin/bash\n\
 gunicorn --bind 0.0.0.0:8080 \
     --workers ${GUNICORN_WORKERS:-2} \
@@ -203,14 +163,4 @@ gunicorn --bind 0.0.0.0:8080 \
     app:app' > /app/run_gunicorn.sh && \
     chmod +x /app/run_gunicorn.sh
 
-# Run the shell script
 CMD ["/app/run_gunicorn.sh"]
-
-RUN apt-get update && apt-get install -y \
-    chromium \
-    chromium-driver \
-    && rm -rf /var/lib/apt/lists/*
-
-ENV CHROME_BIN="/usr/bin/chromium"
-ENV CHROMEDRIVER_BIN="/usr/bin/chromedriver"
-
