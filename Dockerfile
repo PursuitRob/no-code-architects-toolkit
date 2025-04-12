@@ -166,7 +166,14 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt && \
     pip install openai-whisper && \
     pip install jsonschema 
-
+    
+# Install Chromium and Chromedriver
+RUN apt-get update && apt-get install -y \
+    chromium \
+    chromium-driver \
+    python3-selenium \
+    && rm -rf /var/lib/apt/lists/*
+    
 # Create the appuser 
 RUN useradd -m appuser 
 
