@@ -1,7 +1,7 @@
 # Base image
 FROM python:3.9-slim
 
-# Install system dependencies, build tools, and libraries — all in one go
+# Install all system-level dependencies (including Chromium) before creating appuser
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     wget \
@@ -47,9 +47,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Install SRT from source
 RUN git clone https://github.com/Haivision/srt.git && \
-    cd srt && \
-    mkdir build && cd build && \
-    cmake .. && make -j$(nproc) && make install && cd ../.. && rm -rf srt
+    cd srt && mkdir build && cd build && cmake .. && \
+    make -j$(nproc) && make install && cd ../.. && rm -rf srt
 
 # Install SVT-AV1 from source
 RUN git clone https://gitlab.com/AOMediaCodec/SVT-AV1.git && \
@@ -59,28 +58,26 @@ RUN git clone https://gitlab.com/AOMediaCodec/SVT-AV1.git && \
 # Install libvmaf from source
 RUN git clone https://github.com/Netflix/vmaf.git && \
     cd vmaf/libvmaf && meson build --buildtype release && \
-    ninja -C build && ninja -C build install && cd ../.. && rm -rf vmaf && \
-    ldconfig
+    ninja -C build && ninja -C build install && cd ../.. && rm -rf vmaf && ldconfig
 
-# Install fdk-aac from source
+# Build and install fdk-aac from source
 RUN git clone https://github.com/mstorsjo/fdk-aac && \
     cd fdk-aac && autoreconf -fiv && ./configure && \
     make -j$(nproc) && make install && cd .. && rm -rf fdk-aac
 
-# Install libunibreak from source
+# Build and install libunibreak from source
 RUN git clone https://github.com/adah1972/libunibreak.git && \
     cd libunibreak && ./autogen.sh && ./configure && \
     make -j$(nproc) && make install && ldconfig && cd .. && rm -rf libunibreak
 
-# Install libass with ASS_FEATURE_WRAP_UNICODE
+# Build and install libass with ASS_FEATURE_WRAP_UNICODE
 RUN git clone https://github.com/libass/libass.git && \
-    cd libass && autoreconf -i && \
-    ./configure --enable-libunibreak || { cat config.log; exit 1; } && \
+    cd libass && autoreconf -i && ./configure --enable-libunibreak || { cat config.log; exit 1; } && \
     mkdir -p /app && cp config.log /app/config.log && \
     make -j$(nproc) || { echo "Libass build failed"; exit 1; } && \
     make install && ldconfig && cd .. && rm -rf libass
 
-# Build FFmpeg with full feature set
+# Build and install FFmpeg
 RUN git clone https://git.ffmpeg.org/ffmpeg.git ffmpeg && \
     cd ffmpeg && git checkout n7.0.2 && \
     PKG_CONFIG_PATH="/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/local/lib/pkgconfig" \
@@ -113,21 +110,22 @@ RUN git clone https://git.ffmpeg.org/ffmpeg.git ffmpeg && \
         --enable-filter=drawtext \
         --extra-cflags="-I/usr/include/freetype2 -I/usr/include/libpng16 -I/usr/include" \
         --extra-ldflags="-L/usr/lib/x86_64-linux-gnu -lfreetype -lfontconfig" \
-        --enable-gnutls \
-    && make -j$(nproc) && make install && cd .. && rm -rf ffmpeg
+        --enable-gnutls && \
+    make -j$(nproc) && make install && cd .. && rm -rf ffmpeg
 
-# Optional: Include custom fonts (comment out if not needed)
+# Optional: include fonts (only if you have a fonts directory)
 # COPY ./fonts /usr/share/fonts/custom
 # RUN fc-cache -f -v
 
+# Set environment paths
 ENV PATH="/usr/local/bin:${PATH}"
 ENV CHROME_BIN="/usr/bin/chromium"
 ENV CHROMEDRIVER_BIN="/usr/bin/chromedriver"
 
-# Set working directory
+# Set work directory
 WORKDIR /app
 
-# Whisper cache
+# Whisper model cache
 ENV WHISPER_CACHE_DIR="/app/whisper_cache"
 RUN mkdir -p ${WHISPER_CACHE_DIR}
 
@@ -135,25 +133,28 @@ RUN mkdir -p ${WHISPER_CACHE_DIR}
 COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt && \
-    pip install openai-whisper && \
-    pip install jsonschema
+    pip install openai-whisper jsonschema
 
-# Create appuser before downloading models
+# Create non-root user AFTER all installs
 RUN useradd -m appuser
 RUN chown appuser:appuser /app
 
+# Switch to non-root user
 USER appuser
 
-# Pre-download whisper model
+# Pre-load Whisper model (to avoid runtime load delay)
 RUN python -c "import os; print(os.environ.get('WHISPER_CACHE_DIR')); import whisper; whisper.load_model('base')"
 
-# Copy remaining app code
+# Copy the rest of the application code
 COPY . .
 
-EXPOSE 8080
+# Set environment variables
 ENV PYTHONUNBUFFERED=1
 
-# Gunicorn start script
+# Expose port for the app
+EXPOSE 8080
+
+# Gunicorn run script
 RUN echo '#!/bin/bash\n\
 gunicorn --bind 0.0.0.0:8080 \
     --workers ${GUNICORN_WORKERS:-2} \
@@ -163,4 +164,5 @@ gunicorn --bind 0.0.0.0:8080 \
     app:app' > /app/run_gunicorn.sh && \
     chmod +x /app/run_gunicorn.sh
 
+# Start server
 CMD ["/app/run_gunicorn.sh"]
