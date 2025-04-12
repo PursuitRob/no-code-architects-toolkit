@@ -199,11 +199,9 @@ gunicorn --bind 0.0.0.0:8080 \
 # Run the shell script
 CMD ["/app/run_gunicorn.sh"]
 
-# Install Chromium and Chromedriver
 RUN apt-get update && apt-get install -y \
     chromium \
     chromium-driver \
-    python3-selenium \
     && rm -rf /var/lib/apt/lists/*
 
 ENV CHROME_BIN="/usr/bin/chromium"
