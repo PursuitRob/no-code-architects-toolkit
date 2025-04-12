@@ -1,7 +1,7 @@
 # Base image
 FROM python:3.9-slim
 
-# Install all system-level dependencies (including Chromium) before creating appuser
+# Install all dependencies including Chromium and Selenium before switching users
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     wget \
@@ -34,6 +34,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libsvtav1-dev \
     libzimg-dev \
     libwebp-dev \
+    chromium \
+    chromium-driver \
+    python3-selenium \
     git \
     pkg-config \
     autoconf \
@@ -41,8 +44,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libtool \
     libfribidi-dev \
     libharfbuzz-dev \
-    chromium \
-    chromium-driver \
     && rm -rf /var/lib/apt/lists/*
 
 # Install SRT from source
@@ -113,7 +114,7 @@ RUN git clone https://git.ffmpeg.org/ffmpeg.git ffmpeg && \
         --enable-gnutls && \
     make -j$(nproc) && make install && cd .. && rm -rf ffmpeg
 
-# Optional: include fonts (only if you have a fonts directory)
+# Optional: include fonts
 # COPY ./fonts /usr/share/fonts/custom
 # RUN fc-cache -f -v
 
@@ -122,7 +123,7 @@ ENV PATH="/usr/local/bin:${PATH}"
 ENV CHROME_BIN="/usr/bin/chromium"
 ENV CHROMEDRIVER_BIN="/usr/bin/chromedriver"
 
-# Set work directory
+# Set working directory
 WORKDIR /app
 
 # Whisper model cache
@@ -135,26 +136,24 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt && \
     pip install openai-whisper jsonschema
 
-# Create non-root user AFTER all installs
+# Create non-root user AFTER installs
 RUN useradd -m appuser
 RUN chown appuser:appuser /app
 
 # Switch to non-root user
 USER appuser
 
-# Pre-load Whisper model (to avoid runtime load delay)
+# Preload Whisper model
 RUN python -c "import os; print(os.environ.get('WHISPER_CACHE_DIR')); import whisper; whisper.load_model('base')"
 
-# Copy the rest of the application code
+# Copy the application code
 COPY . .
 
-# Set environment variables
+# Expose port
+EXPOSE 8080
 ENV PYTHONUNBUFFERED=1
 
-# Expose port for the app
-EXPOSE 8080
-
-# Gunicorn run script
+# Gunicorn launch script
 RUN echo '#!/bin/bash\n\
 gunicorn --bind 0.0.0.0:8080 \
     --workers ${GUNICORN_WORKERS:-2} \
@@ -164,5 +163,5 @@ gunicorn --bind 0.0.0.0:8080 \
     app:app' > /app/run_gunicorn.sh && \
     chmod +x /app/run_gunicorn.sh
 
-# Start server
+# Start app
 CMD ["/app/run_gunicorn.sh"]
